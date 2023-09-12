@@ -10,4 +10,5 @@ This will open a tab with Binder, a virtual environment where to launch the note
 As an alternative means to execute them, you will find `Colab` links in each notebook, which will open up a 
 Google's Colab session (but you will need a Google Account to run the code)
 
-
+If the Binder link seems stuck, try to clear the web browser cache (this will remove the local container image stored in the 
+browser cached data)
