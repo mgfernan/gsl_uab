@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: quarto-dev/quarto-actions/setup@v2
       - uses: actions/configure-pages@v5
-      - run: quarto render book
+      - run: quarto render book --to html
       - uses: actions/upload-pages-artifact@v3
         with:
           path: book/_book
