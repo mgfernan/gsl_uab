@@ -1,0 +1,25 @@
+project:
+  type: book
+
+book:
+  title: "Localization Systems"
+  author: "Miquel Garcia Fernandez"
+  chapters:
+    - index.qmd
+    - intro.qmd
+    - techniques.qmd
+    - summary.qmd
+    - references.qmd
+
+bibliography: references.bib
+
+format:
+  html:
+    theme:
+      - cosmo
+      - brand
+  pdf:
+    documentclass: scrreprt
+
+
+

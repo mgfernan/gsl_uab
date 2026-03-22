@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive ToA Trilateration</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+        svg {
+            border: 1px solid #ccc;
+            display: block;
+            cursor: default;
+        }
+        .controls {
+            display: flex;
+            gap: 16px;
+            align-items: center;
+            margin: 10px 0 6px;
+            flex-wrap: wrap;
+        }
+        .btn-group {
+            display: flex;
+            gap: 4px;
+            flex-wrap: wrap;
+        }
+        .btn-group button {
+            padding: 4px 14px;
+            border: 1px solid #aaa;
+            background: #f5f5f5;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .btn-group button:hover {
+            background: #e0e0e0;
+        }
+        .btn-group button.active {
+            background: #1565C0;
+            color: white;
+            border-color: #1565C0;
+        }
+        .btn-group button.selected {
+            background: #4CAF50;
+            color: white;
+            border-color: #4CAF50;
+        }
+        .hint {
+            font-size: 13px;
+            color: #777;
+        }
+        .info {
+            margin-top: 6px;
+            font-size: 13px;
+            min-height: 20px;
+        }
+        .status {
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <h1>Interactive ToA Trilateration</h1>
+    <p>Drag nodes or the rover. <strong>Toggle circles</strong> by clicking nodes (green=active). Intersections of active ToA circles locate the rover. At least 3 for unique 2D fix.[file:1]</p>
+    
+    <div class="controls">
+        <label>Nodes:</label>
+        <div class="btn-group" id="nodeBtns"></div>
+        <span class="hint">Click nodes or buttons to toggle circles</span>
+        <div id="status" class="status"></div>
+    </div>
+    
+    <svg id="canvas" width="800" height="600" viewBox="-100 -100 900 700">
+        <defs>
+            <pattern id="grid" width="50" height="50" patternUnits="userSpaceOnUse">
+                <path d="M 50 0 L 0 0 0 50" fill="none" stroke="#eee" stroke-width="1"/>
+            </pattern>
+        </defs>
+        <rect x="-100" y="-100" width="900" height="700" fill="url(#grid)"/>
+        <line x1="10" y1="10" x2="700" y2="20" stroke="#ccc" stroke-width="1"/>
+        <line x1="10" y1="10" x2="20" y2="500" stroke="#ccc" stroke-width="1"/>
+        <text x="710" y="5" font-size="12" fill="#bbb">X</text>
+        <text x="5" y="515" font-size="12" fill="#bbb">Y</text>
+        
+        <!-- Circles and labels redrawn each frame -->
+        <g id="circles"></g>
+        
+        <!-- Node circles managed by JS -->
+        <g id="nodeGroup"></g>
+        
+        <!-- Rover always on top -->
+        <circle id="rover" cx="300" cy="220" r="8" fill="red" stroke="white" stroke-width="2" style="cursor: grab;"/>
+    </svg>
+    
+    <div class="info" id="info"></div>
+    
+    <script>
+        const SVG_NS = "http://www.w3.org/2000/svg";
+        
+        // State
+        const nodeData = [
+            {x: 80, y: 100},  // 0 top-left
+            {x: 520, y: 100}, // 1 top-right
+            {x: 300, y: 430}, // 2 bottom-center
+            {x: 80, y: 360},  // 3 bottom-left
+            {x: 520, y: 360}, // 4 bottom-right
+            {x: 300, y: 30}   // 5 top-center
+        ];
+        const rover = {x: 300, y: 220};
+        const activeSet = new Set([0, 1, 2]); // Initially 3 active
+        
+        const CIRCLE_COLORS = ["#2196F3", "#4CAF50", "#E91E63", "#FF9800", "#9C27B0", "#FF5722"];
+        const NODE_COLOR = "#0066cc";
+        const ACTIVE_NODE_COLOR = "#2E7D32"; // dark green
+        
+        // DOM
+        const svgEl = document.getElementById('canvas');
+        const circlesG = document.getElementById('circles');
+        const nodeGroup = document.getElementById('nodeGroup');
+        const infoEl = document.getElementById('info');
+        const roverEl = document.getElementById('rover');
+        const statusEl = document.getElementById('status');
+        const nodeBtnsEl = document.getElementById('nodeBtns');
+        
+        // Create node circles
+        const nodeEls = nodeData.map((nd, i) => {
+            const c = document.createElementNS(SVG_NS, 'circle');
+            c.setAttribute('cx', nd.x);
+            c.setAttribute('cy', nd.y);
+            c.setAttribute('r', 8);
+            c.setAttribute('stroke', 'white');
+            c.setAttribute('stroke-width', 2);
+            c.style.cursor = 'pointer';
+            nodeGroup.appendChild(c);
+            return c;
+        });
+        
+        // Node toggle buttons
+        nodeData.forEach((nd, i) => {
+            const btn = document.createElement('button');
+            btn.textContent = `Node ${i + 1}`;
+            btn.dataset.node = i;
+            btn.classList.toggle('active', activeSet.has(i));
+            btn.addEventListener('click', (e) => toggleNode(i, e.target));
+            nodeBtnsEl.appendChild(btn);
+        });
+        
+        // Node click toggle
+        nodeEls.forEach((el, i) => {
+            el.addEventListener('click', (e) => {
+                e.stopPropagation();
+                toggleNode(i);
+            });
+        });
+        
+        function toggleNode(i, btnEl = null) {
+            if (activeSet.has(i)) {
+                activeSet.delete(i);
+            } else {
+                activeSet.add(i);
+            }
+            if (btnEl) {
+                btnEl.classList.toggle('active');
+            }
+            nodeEls[i].setAttribute('fill', activeSet.has(i) ? ACTIVE_NODE_COLOR : NODE_COLOR);
+            updateStatus();
+            updateCircles();
+        }
+        
+        function updateStatus() {
+            const count = activeSet.size;
+            statusEl.textContent = `${count} active node${count !== 1 ? 's' : ''}`;
+            statusEl.style.color = count >= 3 ? '#2E7D32' : count >= 2 ? '#FF9800' : '#D32F2F';
+        }
+        
+        // Drag
+        let dragTarget = null; // null=rover, number=nodeIndex
+        let dragMoved = false;
+        let mouseDownPt = null;
+        
+        function dist(p1, p2) {
+            return Math.sqrt((p1.x - p2.x)**2 + (p1.y - p2.y)**2);
+        }
+        
+        function svgPoint(e) {
+            const pt = svgEl.createSVGPoint();
+            pt.x = e.clientX;
+            pt.y = e.clientY;
+            return pt.matrixTransform(svgEl.getScreenCTM().inverse());
+        }
+        
+        svgEl.addEventListener('mousedown', (e) => {
+            const p = svgPoint(e);
+            mouseDownPt = p;
+            dragMoved = false;
+            dragTarget = null;
+            
+            if (dist(p, rover) < 15) {
+                dragTarget = 'rover';
+                return;
+            }
+            for (let i = 0; i < nodeData.length; i++) {
+                if (dist(p, nodeData[i]) < 15) {
+                    // Click handled by node click listener
+                    return;
+                }
+            }
+        });
+        
+        svgEl.addEventListener('mousemove', (e) => {
+            if (dragTarget === null) return;
+            const p = svgPoint(e);
+            if (!dragMoved && dist(p, mouseDownPt) > 5) {
+                dragMoved = true;
+            }
+            if (!dragMoved) return;
+            
+            if (dragTarget === 'rover') {
+                rover.x = p.x;
+                rover.y = p.y;
+                roverEl.setAttribute('cx', p.x);
+                roverEl.setAttribute('cy', p.y);
+            } else {
+                const nd = nodeData[dragTarget];
+                nd.x = p.x;
+                nd.y = p.y;
+                nodeEls[dragTarget].setAttribute('cx', p.x);
+                nodeEls[dragTarget].setAttribute('cy', p.y);
+            }
+            updateCircles();
+        });
+        
+        svgEl.addEventListener('mouseup', () => {
+            dragTarget = null;
+            dragMoved = false;
+            mouseDownPt = null;
+        });
+        
+        svgEl.addEventListener('mouseleave', () => {
+            dragTarget = null;
+            dragMoved = false;
+        });
+        
+        // Rendering helpers
+        function addLabel(parent, x, y, text, color, bold = false) {
+            const el = document.createElementNS(SVG_NS, 'text');
+            el.setAttribute('x', x);
+            el.setAttribute('y', y);
+            el.setAttribute('text-anchor', 'middle');
+            el.setAttribute('font-size', '13');
+            el.setAttribute('fill', color);
+            if (bold) el.setAttribute('font-weight', 'bold');
+            el.textContent = text;
+            parent.appendChild(el);
+        }
+        
+        // Main update
+        function updateCircles() {
+            circlesG.innerHTML = '';
+            const infoParts = [];
+            
+            for (let i of activeSet) {
+                const nd = nodeData[i];
+                const d = dist(rover, nd);
+                const color = CIRCLE_COLORS[i % CIRCLE_COLORS.length];
+                
+                // Draw circle
+                const circle = document.createElementNS(SVG_NS, 'circle');
+                circle.setAttribute('cx', nd.x);
+                circle.setAttribute('cy', nd.y);
+                circle.setAttribute('r', d);
+                circle.setAttribute('fill', 'none');
+                circle.setAttribute('stroke', color);
+                circle.setAttribute('stroke-width', '2.5');
+                circle.setAttribute('stroke-dasharray', '6,3');
+                circle.setAttribute('opacity', '0.9');
+                circlesG.appendChild(circle);
+                
+                // Label distance
+                addLabel(circlesG, nd.x, nd.y - d - 8, `${d.toFixed(1)} px`, color, true);
+                
+                infoParts.push(`<span style="color:${color}">Node ${i+1}: ${d.toFixed(1)} px</span>`);
+            }
+            
+            // Node labels
+            for (let i = 0; i < nodeData.length; i++) {
+                const nd = nodeData[i];
+                const isActive = activeSet.has(i);
+                const ly = nd.y < 250 ? nd.y - 18 : nd.y + 24;
+                addLabel(circlesG, nd.x, ly, 
+                         isActive ? `● Node ${i + 1}` : `○ Node ${i + 1}`, 
+                         isActive ? ACTIVE_NODE_COLOR : NODE_COLOR, false);
+            }
+            addLabel(circlesG, rover.x, rover.y - 18, 'Rover', 'red', true);
+            
+            infoEl.innerHTML = infoParts.length ? infoParts.join('&nbsp;&nbsp;&nbsp;') : 
+                               '<span style="color:#888">Select at least 2 nodes</span>';
+        }
+        
+        // Bootstrap
+        updateStatus();
+        updateCircles();
+    </script>
+</body>
+</html>
+

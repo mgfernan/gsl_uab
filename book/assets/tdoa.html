@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TDoA Trilateration</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        svg { border: 1px solid #ccc; display: block; cursor: default; }
+        .controls { display: flex; gap: 16px; align-items: center; margin: 10px 0 6px; flex-wrap: wrap; }
+        .btn-group { display: flex; gap: 4px; }
+        .btn-group button {
+            padding: 4px 14px; border: 1px solid #aaa; background: #f5f5f5;
+            border-radius: 4px; cursor: pointer; font-size: 14px;
+        }
+        .btn-group button:hover { background: #e0e0e0; }
+        .btn-group button.active { background: #1565C0; color: white; border-color: #1565C0; }
+        .hint { font-size: 13px; color: #777; }
+        .info { margin-top: 6px; font-size: 13px; min-height: 20px; }
+    </style>
+</head>
+<body>
+    <h1>Interactive TDoA Trilateration</h1>
+    <p>Drag nodes or the rover. <strong>Click a node</strong> to set it as the reference.
+       Dashed curves are TDoA hyperbolas; the bright branch is the one the rover lies on.</p>
+
+    <div class="controls">
+        <label>Nodes:</label>
+        <div class="btn-group" id="nodeCount"></div>
+        <span class="hint">≥ 3 nodes needed for a unique position fix</span>
+    </div>
+
+    <svg id="canvas" width="800" height="600" viewBox="-100 -100 900 700">
+        <defs>
+            <pattern id="grid" width="50" height="50" patternUnits="userSpaceOnUse">
+                <path d="M 50 0 L 0 0 0 50" fill="none" stroke="#eee" stroke-width="1"/>
+            </pattern>
+        </defs>
+        <rect x="-100" y="-100" width="900" height="700" fill="url(#grid)"/>
+        <line x1="0" y1="0" x2="700" y2="0" stroke="#ccc" stroke-width="1"/>
+        <line x1="0" y1="0" x2="0" y2="500" stroke="#ccc" stroke-width="1"/>
+        <text x="710" y="5"  font-size="12" fill="#bbb">X</text>
+        <text x="5"   y="515" font-size="12" fill="#bbb">Y</text>
+
+        <!-- Hyperbolas and floating labels redrawn each frame -->
+        <g id="hyperbolas"></g>
+
+        <!-- Node circles managed by JS -->
+        <g id="nodeGroup"></g>
+
+        <!-- Rover always on top -->
+        <circle id="rover" cx="300" cy="220" r="8" fill="red" stroke="white" stroke-width="2"
+                style="cursor:grab"/>
+    </svg>
+
+    <div class="info" id="info"></div>
+
+    <script>
+    (() => {
+        const SVG_NS = 'http://www.w3.org/2000/svg';
+
+        // ── State ──────────────────────────────────────────────────────────
+        const nodeData = [
+            { x:  80, y: 100 },   // 0 top-left
+            { x: 520, y: 100 },   // 1 top-right
+            { x: 300, y: 430 },   // 2 bottom-center
+            { x:  80, y: 360 },   // 3 bottom-left
+            { x: 520, y: 360 },   // 4 bottom-right
+            { x: 300, y:  30 },   // 5 top-center
+        ];
+        const rover = { x: 300, y: 220 };
+        let numNodes = 3;
+        let refIdx   = 0;
+
+        const HYPER_COLORS = ['#2196F3', '#4CAF50', '#E91E63', '#FF9800', '#9C27B0'];
+        const NODE_COLOR   = '#0066cc';
+        const REF_COLOR    = '#E65100';   // deep orange
+
+        // ── DOM ────────────────────────────────────────────────────────────
+        const svgEl       = document.getElementById('canvas');
+        const hyperbolasG = document.getElementById('hyperbolas');
+        const nodeGroup   = document.getElementById('nodeGroup');
+        const infoEl      = document.getElementById('info');
+        const roverEl     = document.getElementById('rover');
+
+        // ── Create node circles ────────────────────────────────────────────
+        const nodeEls = nodeData.map((nd) => {
+            const c = document.createElementNS(SVG_NS, 'circle');
+            c.setAttribute('cx', nd.x);
+            c.setAttribute('cy', nd.y);
+            c.setAttribute('r', '8');
+            c.setAttribute('stroke', 'white');
+            c.setAttribute('stroke-width', '2');
+            c.style.cursor = 'grab';
+            nodeGroup.appendChild(c);
+            return c;
+        });
+
+        // ── Node-count buttons ─────────────────────────────────────────────
+        const nodeCountEl = document.getElementById('nodeCount');
+        for (let n = 2; n <= 6; n++) {
+            const btn = document.createElement('button');
+            btn.textContent = n;
+            btn.dataset.n = n;
+            btn.addEventListener('click', () => setNumNodes(n));
+            nodeCountEl.appendChild(btn);
+        }
+
+        // ── Drag / click ───────────────────────────────────────────────────
+        let dragTarget  = null;   // null | 'rover' | nodeIndex
+        let dragMoved   = false;
+        let mouseDownPt = null;
+
+        function dist(p1, p2) {
+            return Math.sqrt((p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2);
+        }
+
+        function svgPoint(e) {
+            const pt = svgEl.createSVGPoint();
+            pt.x = e.clientX; pt.y = e.clientY;
+            return pt.matrixTransform(svgEl.getScreenCTM().inverse());
+        }
+
+        svgEl.addEventListener('mousedown', (e) => {
+            const p = svgPoint(e);
+            mouseDownPt = p;
+            dragMoved   = false;
+            dragTarget  = null;
+            if (dist(p, rover) < 15) { dragTarget = 'rover'; return; }
+            for (let i = 0; i < numNodes; i++) {
+                if (dist(p, nodeData[i]) < 15) { dragTarget = i; return; }
+            }
+        });
+
+        svgEl.addEventListener('mousemove', (e) => {
+            if (dragTarget === null) return;
+            const p = svgPoint(e);
+            if (!dragMoved && dist(p, mouseDownPt) > 5) dragMoved = true;
+            if (!dragMoved) return;
+            if (dragTarget === 'rover') {
+                rover.x = p.x; rover.y = p.y;
+                roverEl.setAttribute('cx', p.x);
+                roverEl.setAttribute('cy', p.y);
+            } else {
+                const nd = nodeData[dragTarget];
+                nd.x = p.x; nd.y = p.y;
+                nodeEls[dragTarget].setAttribute('cx', p.x);
+                nodeEls[dragTarget].setAttribute('cy', p.y);
+            }
+            updateHyperbolas();
+        });
+
+        svgEl.addEventListener('mouseup', () => {
+            // Short click on a node (no significant movement) → change reference
+            if (!dragMoved && typeof dragTarget === 'number') {
+                refIdx = dragTarget;
+            }
+            dragTarget = null; dragMoved = false; mouseDownPt = null;
+            updateHyperbolas();
+        });
+
+        svgEl.addEventListener('mouseleave', () => {
+            dragTarget = null; dragMoved = false;
+        });
+
+        // ── Controls ───────────────────────────────────────────────────────
+        function setNumNodes(n) {
+            numNodes = n;
+            if (refIdx >= numNodes) refIdx = 0;
+            nodeCountEl.querySelectorAll('button').forEach(btn => {
+                btn.classList.toggle('active', +btn.dataset.n === n);
+            });
+            nodeEls.forEach((el, i) => { el.style.display = i < numNodes ? '' : 'none'; });
+            updateHyperbolas();
+        }
+
+        // ── Rendering helpers ──────────────────────────────────────────────
+        function toSub(n) {
+            return String(n).replace(/[0-9]/g, d => '₀₁₂₃₄₅₆₇₈₉'[d]);
+        }
+
+        function addLabel(parent, x, y, text, color, bold) {
+            const el = document.createElementNS(SVG_NS, 'text');
+            el.setAttribute('x', x);
+            el.setAttribute('y', y);
+            el.setAttribute('text-anchor', 'middle');
+            el.setAttribute('font-size', '13');
+            el.setAttribute('fill', color);
+            if (bold) el.setAttribute('font-weight', 'bold');
+            el.textContent = text;
+            parent.appendChild(el);
+        }
+
+        // ── Main update ────────────────────────────────────────────────────
+        function updateHyperbolas() {
+            hyperbolasG.innerHTML = '';
+
+            // Style node circles
+            nodeEls.forEach((el, i) => {
+                el.setAttribute('fill', i === refIdx ? REF_COLOR : NODE_COLOR);
+                el.setAttribute('r',    i === refIdx ? '10' : '8');
+            });
+
+            // Hyperbola for each (ref, other) pair
+            const ref = nodeData[refIdx];
+            const infoParts = [];
+            let colorIdx = 0;
+            for (let i = 0; i < numNodes; i++) {
+                if (i === refIdx) continue;
+                const nd    = nodeData[i];
+                const sd    = dist(rover, ref) - dist(rover, nd);
+                const color = HYPER_COLORS[colorIdx++];
+                drawHyperbola(hyperbolasG, ref, nd, sd, color, refIdx, i);
+                infoParts.push(
+                    `<span style="color:${color}">` +
+                    `\u0394d${toSub(refIdx + 1)}${toSub(i + 1)} = ${sd.toFixed(1)} px` +
+                    `</span>`
+                );
+            }
+
+            // Node labels (follow dragged positions)
+            for (let i = 0; i < numNodes; i++) {
+                const nd    = nodeData[i];
+                const isRef = i === refIdx;
+                // Place label above nodes in upper half, below in lower half
+                const ly = nd.y > 250 ? nd.y + 24 : nd.y - 18;
+                addLabel(hyperbolasG, nd.x, ly,
+                         isRef ? `Node ${i + 1} (Ref)` : `Node ${i + 1}`,
+                         isRef ? REF_COLOR : NODE_COLOR, false);
+            }
+            addLabel(hyperbolasG, rover.x, rover.y - 18, 'Rover', 'red', true);
+
+            infoEl.innerHTML = infoParts.length
+                ? infoParts.join('&emsp;|&emsp;')
+                : '<span style="color:#888">Select at least 2 nodes</span>';
+        }
+
+        // ── Hyperbola drawing ──────────────────────────────────────────────
+        //
+        // For foci f1, f2 and signed distance difference signedDiff = d(P,f1) - d(P,f2):
+        //   a = |signedDiff| / 2   (semi-major axis)
+        //   c = |f1-f2| / 2        (focal distance from center)
+        //   b = sqrt(c²-a²)        (semi-minor axis)
+        //
+        // Parametric branches (t ∈ [-3, 3]), rotated by angle f1→f2:
+        //   local:  lx = ±a·cosh(t),  ly = b·sinh(t)
+        //   world:  gx = midX + lx·cosθ - ly·sinθ
+        //           gy = midY + lx·sinθ + ly·cosθ
+        //
+        // Rover lies on the +1 branch when signedDiff > 0 (farther from f1).
+        function drawHyperbola(parent, f1, f2, signedDiff, color, idx1, idx2) {
+            const dx = f2.x - f1.x, dy = f2.y - f1.y;
+            const dc = Math.sqrt(dx * dx + dy * dy);
+            const absDiff = Math.abs(signedDiff);
+            if (absDiff < 0.5 || absDiff >= dc) return;   // degenerate
+
+            const a    = absDiff / 2;
+            const c    = dc / 2;
+            const b    = Math.sqrt(c * c - a * a);
+            const midX = (f1.x + f2.x) / 2;
+            const midY = (f1.y + f2.y) / 2;
+            const cosA = dx / dc, sinA = dy / dc;
+            const roverBranch = Math.sign(signedDiff);
+
+            for (const sign of [1, -1]) {
+                const isRoverBranch = sign === roverBranch;
+                let d = '';
+                for (let t = -3.0; t <= 3.0; t += 0.05) {
+                    const lx = sign * a * Math.cosh(t);
+                    const ly = b * Math.sinh(t);
+                    const gx = midX + lx * cosA - ly * sinA;
+                    const gy = midY + lx * sinA + ly * cosA;
+                    d += d === '' ? `M ${gx} ${gy}` : ` L ${gx} ${gy}`;
+                }
+                const path = document.createElementNS(SVG_NS, 'path');
+                path.setAttribute('d', d);
+                path.setAttribute('fill', 'none');
+                path.setAttribute('stroke', color);
+                path.setAttribute('stroke-width',   isRoverBranch ? '2.5' : '1.5');
+                path.setAttribute('stroke-dasharray', '6,4');
+                path.setAttribute('opacity',         isRoverBranch ? '1'   : '0.3');
+                parent.appendChild(path);
+            }
+
+            // Label near the vertex of the rover's branch (t = 0 → lx = ±a, ly = 0)
+            const vx = midX + roverBranch * a * cosA;
+            const vy = midY + roverBranch * a * sinA;
+            addLabel(parent, vx, vy - 14, `\u0394d${toSub(idx1 + 1)}${toSub(idx2 + 1)}`, color, false);
+        }
+
+        // ── Bootstrap ──────────────────────────────────────────────────────
+        setNumNodes(3);
+    })();
+    </script>
+</body>
+</html>

@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AoA Trilateration</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        svg { border: 1px solid #ccc; display: block; }
+        .controls { display: flex; gap: 16px; align-items: center; margin: 10px 0 6px; flex-wrap: wrap; }
+        .btn-group { display: flex; gap: 4px; }
+        .btn-group button {
+            padding: 4px 14px; border: 1px solid #aaa; background: #f5f5f5;
+            border-radius: 4px; cursor: pointer; font-size: 14px;
+        }
+        .btn-group button:hover { background: #e0e0e0; }
+        .btn-group button.active { background: #1565C0; color: white; border-color: #1565C0; }
+        label { font-size: 14px; }
+        input[type=range] { vertical-align: middle; width: 110px; }
+        .hint { font-size: 13px; color: #777; }
+        #renoiseBtn { padding: 4px 10px; border: 1px solid #aaa; background: #f5f5f5;
+                      border-radius: 4px; cursor: pointer; font-size: 13px; }
+        #renoiseBtn:disabled { opacity: 0.4; cursor: default; }
+        .info { margin-top: 6px; font-size: 13px; min-height: 20px; }
+    </style>
+</head>
+<body>
+    <h1>Interactive AoA Trilateration</h1>
+    <p>Each node measures the <strong>angle of arrival</strong> of the signal, defining a ray toward
+       the rover. Drag nodes or the rover. The estimated position <strong>(&#x2295;)</strong> is the
+       least-squares intersection of all rays.</p>
+
+    <div class="controls">
+        <label>Nodes:</label>
+        <div class="btn-group" id="nodeCount"></div>
+        <label>Angle noise:
+            <input type="range" id="noiseSlider" min="0" max="15" value="0" step="0.5">
+            <span id="noiseVal">0°</span>
+        </label>
+        <button id="renoiseBtn" disabled>Randomize noise</button>
+        <span class="hint" id="hint">≥ 2 nodes needed for a position fix</span>
+    </div>
+
+    <svg id="canvas" width="800" height="600" viewBox="-100 -100 900 700">
+        <defs>
+            <pattern id="grid" width="50" height="50" patternUnits="userSpaceOnUse">
+                <path d="M 50 0 L 0 0 0 50" fill="none" stroke="#eee" stroke-width="1"/>
+            </pattern>
+        </defs>
+        <rect x="-100" y="-100" width="900" height="700" fill="url(#grid)"/>
+        <line x1="0" y1="0" x2="700" y2="0" stroke="#ccc" stroke-width="1"/>
+        <line x1="0" y1="0" x2="0" y2="500" stroke="#ccc" stroke-width="1"/>
+        <text x="710" y="5"   font-size="12" fill="#bbb">X</text>
+        <text x="5"   y="515" font-size="12" fill="#bbb">Y</text>
+
+        <!-- Dynamic content: rays, arcs, labels -->
+        <g id="raysG"></g>
+
+        <!-- Node circles managed by JS -->
+        <g id="nodeGroup"></g>
+
+        <!-- Rover (always on top) -->
+        <circle id="rover" cx="300" cy="220" r="8" fill="red" stroke="white" stroke-width="2"
+                style="cursor:grab"/>
+    </svg>
+
+    <div class="info" id="info"></div>
+
+    <script>
+    (() => {
+        const SVG_NS = 'http://www.w3.org/2000/svg';
+
+        // ── State ──────────────────────────────────────────────────────────
+        const nodeData = [
+            { x:  80, y: 100 },   // 0 top-left
+            { x: 520, y: 100 },   // 1 top-right
+            { x: 300, y: 430 },   // 2 bottom-center
+            { x:  80, y: 360 },   // 3 bottom-left
+            { x: 520, y: 360 },   // 4 bottom-right
+            { x: 300, y:  30 },   // 5 top-center
+        ];
+        const rover = { x: 300, y: 220 };
+        let numNodes    = 3;
+        let noiseLevel  = 0;           // degrees
+        let noiseOffsets = new Array(6).fill(0);  // per-node noise in degrees
+
+        const NODE_COLORS = ['#2196F3', '#4CAF50', '#E91E63', '#FF9800', '#9C27B0', '#00BCD4'];
+        const NODE_COLOR  = '#0066cc';
+        const EST_COLOR   = '#FF6F00';
+
+        // ── DOM ────────────────────────────────────────────────────────────
+        const svgEl       = document.getElementById('canvas');
+        const raysG       = document.getElementById('raysG');
+        const nodeGroup   = document.getElementById('nodeGroup');
+        const infoEl      = document.getElementById('info');
+        const roverEl     = document.getElementById('rover');
+        const noiseSlider = document.getElementById('noiseSlider');
+        const noiseValEl  = document.getElementById('noiseVal');
+        const renoiseBtn  = document.getElementById('renoiseBtn');
+        const nodeCountEl = document.getElementById('nodeCount');
+
+        // ── Create node circles ────────────────────────────────────────────
+        const nodeEls = nodeData.map((nd) => {
+            const c = document.createElementNS(SVG_NS, 'circle');
+            c.setAttribute('cx', nd.x); c.setAttribute('cy', nd.y); c.setAttribute('r', '8');
+            c.setAttribute('fill', NODE_COLOR);
+            c.setAttribute('stroke', 'white'); c.setAttribute('stroke-width', '2');
+            c.style.cursor = 'grab';
+            nodeGroup.appendChild(c);
+            return c;
+        });
+
+        // ── Node-count buttons ─────────────────────────────────────────────
+        for (let n = 2; n <= 6; n++) {
+            const btn = document.createElement('button');
+            btn.textContent = n; btn.dataset.n = n;
+            btn.addEventListener('click', () => setNumNodes(n));
+            nodeCountEl.appendChild(btn);
+        }
+
+        // ── Noise controls ─────────────────────────────────────────────────
+        noiseSlider.addEventListener('input', () => {
+            noiseLevel = parseFloat(noiseSlider.value);
+            noiseValEl.textContent = `${noiseLevel}°`;
+            renoiseBtn.disabled = noiseLevel === 0;
+            generateNoise();
+            update();
+        });
+        renoiseBtn.addEventListener('click', () => { generateNoise(); update(); });
+
+        function generateNoise() {
+            noiseOffsets = nodeData.map(() => (Math.random() - 0.5) * 2 * noiseLevel);
+        }
+
+        // ── Drag ───────────────────────────────────────────────────────────
+        let dragTarget  = null;
+        let dragMoved   = false;
+        let mouseDownPt = null;
+
+        function dist(p1, p2) {
+            return Math.sqrt((p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2);
+        }
+        function svgPoint(e) {
+            const pt = svgEl.createSVGPoint();
+            pt.x = e.clientX; pt.y = e.clientY;
+            return pt.matrixTransform(svgEl.getScreenCTM().inverse());
+        }
+
+        svgEl.addEventListener('mousedown', (e) => {
+            const p = svgPoint(e);
+            mouseDownPt = p; dragMoved = false; dragTarget = null;
+            if (dist(p, rover) < 15) { dragTarget = 'rover'; return; }
+            for (let i = 0; i < numNodes; i++) {
+                if (dist(p, nodeData[i]) < 15) { dragTarget = i; return; }
+            }
+        });
+
+        svgEl.addEventListener('mousemove', (e) => {
+            if (dragTarget === null) return;
+            const p = svgPoint(e);
+            if (!dragMoved && dist(p, mouseDownPt) > 5) dragMoved = true;
+            if (!dragMoved) return;
+            if (dragTarget === 'rover') {
+                rover.x = p.x; rover.y = p.y;
+                roverEl.setAttribute('cx', p.x); roverEl.setAttribute('cy', p.y);
+            } else {
+                nodeData[dragTarget].x = p.x; nodeData[dragTarget].y = p.y;
+                nodeEls[dragTarget].setAttribute('cx', p.x);
+                nodeEls[dragTarget].setAttribute('cy', p.y);
+            }
+            update();
+        });
+
+        svgEl.addEventListener('mouseup',    () => { dragTarget = null; dragMoved = false; });
+        svgEl.addEventListener('mouseleave', () => { dragTarget = null; dragMoved = false; });
+
+        // ── Controls ───────────────────────────────────────────────────────
+        function setNumNodes(n) {
+            numNodes = n;
+            nodeCountEl.querySelectorAll('button').forEach(btn => {
+                btn.classList.toggle('active', +btn.dataset.n === n);
+            });
+            nodeEls.forEach((el, i) => { el.style.display = i < numNodes ? '' : 'none'; });
+            update();
+        }
+
+        // ── SVG helpers ────────────────────────────────────────────────────
+        function addEl(parent, tag, attrs) {
+            const el = document.createElementNS(SVG_NS, tag);
+            for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+            parent.appendChild(el);
+            return el;
+        }
+
+        function addLabel(parent, x, y, text, color, bold) {
+            const el = addEl(parent, 'text', {
+                x, y, 'text-anchor': 'middle', 'font-size': '13', fill: color,
+                ...(bold ? { 'font-weight': 'bold' } : {})
+            });
+            el.textContent = text;
+        }
+
+        // ── Least-squares intersection ─────────────────────────────────────
+        //
+        // Each ray: line through (x, y) with angle θ.
+        // Constraint:  sin(θ)(X − x) − cos(θ)(Y − y) = 0
+        //   ⟹  sin(θ)·X − cos(θ)·Y  =  sin(θ)·x − cos(θ)·y
+        // Stack into A·P = b, solve with normal equations (AᵀA)⁻¹Aᵀb.
+        function lsIntersection(rays) {
+            let a00 = 0, a01 = 0, a11 = 0, b0 = 0, b1 = 0;
+            for (const { x, y, angle } of rays) {
+                const s = Math.sin(angle), c = Math.cos(angle);
+                const rhs = s * x - c * y;
+                a00 += s * s; a01 -= s * c; a11 += c * c;
+                b0  += s * rhs; b1 -= c * rhs;
+            }
+            const det = a00 * a11 - a01 * a01;
+            if (Math.abs(det) < 1e-10) return null;
+            return {
+                x: (a11 * b0 - a01 * b1) / det,
+                y: (a00 * b1 - a01 * b0) / det,
+            };
+        }
+
+        // ── Angle arc ──────────────────────────────────────────────────────
+        //
+        // Draw arc from east (0 rad) to `angle` around node `nd`.
+        // In SVG with y-down, positive angles are clockwise, so sweep=1 for θ>0.
+        function drawAngleArc(parent, nd, angle, color) {
+            const R = 28;
+            // Reference tick (east direction)
+            addEl(parent, 'line', {
+                x1: nd.x, y1: nd.y, x2: nd.x + R + 10, y2: nd.y,
+                stroke: '#bbb', 'stroke-width': '1', 'stroke-dasharray': '2,3'
+            });
+
+            // Normalize angle to (-π, π]
+            let a = angle;
+            while (a >  Math.PI) a -= 2 * Math.PI;
+            while (a < -Math.PI) a += 2 * Math.PI;
+
+            const x1 = nd.x + R;                          // arc start (east)
+            const y1 = nd.y;
+            const x2 = nd.x + R * Math.cos(a);            // arc end
+            const y2 = nd.y + R * Math.sin(a);
+            const sweep    = a >= 0 ? 1 : 0;              // CW for +θ (y-down), CCW for −θ
+            const largeArc = Math.abs(a) > Math.PI ? 1 : 0;
+
+            addEl(parent, 'path', {
+                d: `M ${x1} ${y1} A ${R} ${R} 0 ${largeArc} ${sweep} ${x2} ${y2}`,
+                fill: 'none', stroke: color, 'stroke-width': '1.5', opacity: '0.75'
+            });
+
+            // Degree label at mid-angle, slightly outside arc
+            const mid = a / 2;
+            const labelR = 48;
+            addLabel(parent, nd.x + labelR * Math.cos(mid), nd.y + labelR * Math.sin(mid) - 3,
+                     `${(a * 180 / Math.PI).toFixed(1)}°`, color, false);
+        }
+
+        // ── Main update ────────────────────────────────────────────────────
+        function update() {
+            raysG.innerHTML = '';
+
+            const rays = [];
+            const infoParts = [];
+
+            for (let i = 0; i < numNodes; i++) {
+                const nd    = nodeData[i];
+                const color = NODE_COLORS[i];
+                const trueAngle = Math.atan2(rover.y - nd.y, rover.x - nd.x);
+                const measAngle = trueAngle + noiseOffsets[i] * Math.PI / 180;
+
+                rays.push({ x: nd.x, y: nd.y, angle: measAngle });
+
+                const dx = Math.cos(measAngle), dy = Math.sin(measAngle);
+
+                // Faded back-extension from node
+                addEl(raysG, 'line', {
+                    x1: nd.x, y1: nd.y,
+                    x2: nd.x - 80 * dx, y2: nd.y - 80 * dy,
+                    stroke: color, 'stroke-width': '1.5',
+                    'stroke-dasharray': '4,5', opacity: '0.18'
+                });
+                // Bright forward ray
+                addEl(raysG, 'line', {
+                    x1: nd.x, y1: nd.y,
+                    x2: nd.x + 1200 * dx, y2: nd.y + 1200 * dy,
+                    stroke: color, 'stroke-width': '2', 'stroke-dasharray': '6,4'
+                });
+
+                // Angle arc
+                drawAngleArc(raysG, nd, measAngle, color);
+
+                // Node label
+                const ly = nd.y > 250 ? nd.y + 24 : nd.y - 18;
+                addLabel(raysG, nd.x, ly, `Node ${i + 1}`, color, false);
+
+                const deg = (measAngle * 180 / Math.PI).toFixed(1);
+                infoParts.push(
+                    `<span style="color:${color}">\u03b8${i + 1} = ${deg}\u00b0` +
+                    (noiseLevel > 0 ? ` <em>(+${noiseOffsets[i].toFixed(1)}\u00b0)</em>` : '') +
+                    `</span>`
+                );
+            }
+
+            // ── Estimated position ─────────────────────────────────────────
+            const est = lsIntersection(rays);
+            if (est) {
+                const err = dist(est, rover);
+                const R   = 10;
+
+                // Error line between true and estimated (visible when noisy)
+                if (noiseLevel > 0 && err > 1) {
+                    addEl(raysG, 'line', {
+                        x1: rover.x, y1: rover.y, x2: est.x, y2: est.y,
+                        stroke: EST_COLOR, 'stroke-width': '1.5',
+                        'stroke-dasharray': '3,3', opacity: '0.6'
+                    });
+                }
+
+                // Crosshair circle
+                addEl(raysG, 'circle', {
+                    cx: est.x, cy: est.y, r: R,
+                    fill: 'none', stroke: EST_COLOR, 'stroke-width': '2'
+                });
+                // Cross lines
+                addEl(raysG, 'line', {
+                    x1: est.x - R * 1.4, y1: est.y, x2: est.x + R * 1.4, y2: est.y,
+                    stroke: EST_COLOR, 'stroke-width': '1.5'
+                });
+                addEl(raysG, 'line', {
+                    x1: est.x, y1: est.y - R * 1.4, x2: est.x, y2: est.y + R * 1.4,
+                    stroke: EST_COLOR, 'stroke-width': '1.5'
+                });
+                addLabel(raysG, est.x, est.y - R - 7, 'Est.', EST_COLOR, false);
+
+                if (noiseLevel > 0) {
+                    infoParts.push(
+                        `<span style="color:${EST_COLOR}">error = ${err.toFixed(1)} px</span>`
+                    );
+                }
+            }
+
+            // Rover label (always on top of dynamic layer)
+            addLabel(raysG, rover.x, rover.y - 18, 'Rover', 'red', true);
+
+            infoEl.innerHTML = infoParts.join('&emsp;|&emsp;');
+        }
+
+        // ── Bootstrap ──────────────────────────────────────────────────────
+        setNumNodes(3);
+    })();
+    </script>
+</body>
+</html>

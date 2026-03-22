@@ -6,15 +6,14 @@
 		"context": "..",
 		"dockerfile": "Dockerfile"
 	},
-	"features": {
-		"ghcr.io/devcontainers/features/python:1": {}
-	},
 	"customizations": {
 		"vscode": {
 			"extensions": [
 				"ms-toolsai.jupyter",
 				"ms-python.python",
-				"quarto.quarto"
+				"quarto.quarto",
+				"GitHub.copilot-chat",
+				"GitHub.copilot"
 			]
 		}
 	}
