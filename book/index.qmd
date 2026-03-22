@@ -1,5 +1,4 @@
 # Preface {.unnumbered}
 
-This is a Quarto book.
+Welcome to this book on localization systems. Throughout these chapters, we will explore the core concepts that make positioning possible, from fundamental localization techniques to complete navigation and sensing systems. We will compare how different methods work, what information they require, and when each approach is most useful in real-world scenarios.
 
-To learn more about Quarto books visit <https://quarto.org/docs/books>.

@@ -1,5 +1,7 @@
 # Introduction
 
-This is a book created from markdown and executable code.
+Localization systems estimate position from physical measurements captured by one or more reference nodes.
 
-See @knuth84 for additional discussion of literate programming.
+In this book, we introduce the main measurement techniques used in practice: Time of Arrival (ToA), Time Difference of Arrival (TDoA), Angle of Arrival/Departure (AoA/AoD), and Received Signal Strength (RSS). Each technique offers a different trade-off between required infrastructure, visibility conditions (LOS/NLOS), and achievable accuracy.
+
+We will compare these techniques and study how they are integrated into complete systems, from the localization receiver that acquires measurements to the positioning engine that computes the user state.
