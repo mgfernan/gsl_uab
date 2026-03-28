@@ -1,0 +1,11 @@
+# Notation
+
+This section includes a list of the notation used in this book.
+
+$r$ - Measurement (e.g., distance/range, time, angle)
+$\mathbf{x}$ - Position of the target
+$\mathbf{x}_i$ - Position of the $i$-th reference node
+$d_i$ - Distance measurement from the $i$-th reference node to the target
+$\tau_i$ - Time of Arrival of the signal from the target to the $i$-th reference node
+$w_i$ - Measurement noise for the $i$-th measurement
+$c$ - Speed of light

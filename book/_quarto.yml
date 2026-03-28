@@ -7,7 +7,11 @@ book:
   chapters:
     - index.qmd
     - intro.qmd
-    - techniques.qmd
+    - part: "Fundamentals"
+      chapters:
+      - gradient_descent_toa.qmd
+      - measurement_noise.qmd
+      - techniques.qmd
     - summary.qmd
     - references.qmd
 

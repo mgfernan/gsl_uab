@@ -1,0 +1,148 @@
+---
+title: "Gradient Descent"
+format:
+  html:
+    code-fold: true
+jupyter: python3
+---
+
+In this chapter, we will explore how to use gradient descent to solve the Time of Arrival (ToA) localization problem. ToA localization involves estimating the position of a target based on the time it takes for signals to travel from the target to multiple reference nodes. We will derive the cost function for ToA localization, compute its gradient, and implement a simple gradient descent algorithm to find the target's position.
+
+## ToA measurements
+
+We start with a set of reference nodes located at known positions
+
+$$
+\mathbf{x}_i\quad i = 1, 2, \ldots, N
+$$
+
+The rover is located at an unknown position $\mathbf{x}$. The distance (range, $d$) between the node and the rover can be computed from the travel time ($\tau$, or Time of Arrival) of the signal from the target to the $i$-th reference node:
+
+$$
+d_i = \frac{\tau_i}{c}
+$$
+
+where $c$ is the speed of light. The term $\tau$ is the difference between the time of arrival and the time of departure of the signal. Mathematically, we can express the distance between rover and node as the Euclidean distance between their positions:
+
+$$
+d_i = \|\mathbf{x} - \mathbf{x}_i\| + w_i
+$$ {#eq-toa}
+
+Note that we have also added the measurement noise term ($w_i$). If we expand @eq-toa, we can express the distance as a function of the target position $\mathbf{x}$ and the reference node positions $\mathbf{x}_i$:
+
+$$
+d_i = \sqrt{(x_i - x)^2 + (y_i - y)^2} + w_i
+$$
+
+where $w$ is the measurement noise (see @sec-noisebasics for further details and intuition).
+
+## Estimating the target position
+
+Once the measurement model is defined, the goal is to estimate the position $\mathbf{x}$ of the target based on the observed distances $d_i$. For this scenario, we will assume that there is no measurement noise (i.e., $w_i = 0$) to simplify the problem.
+
+Let's assume we have 3 reference nodes located at the following positions:
+
+```{python}
+#|code-fold: false
+import numpy as np
+
+# Reference node positions
+x_nodes = np.array([[0, 0],
+                    [10, 0],
+                    [5, 10]])
+```
+
+The true position of the target, which is not known yet, is at $\mathbf{x} = (5, 5)$. Our receiver will thus measure the following distances to the target:
+
+```{python}
+#|code-fold: false
+# True target position
+x_true = np.array([5, 5])
+
+# Compute true distances to the target
+d_true = np.linalg.norm(x_nodes - x_true, axis=1)
+print("True distances to the target:", d_true)
+```
+
+To begin the estimation process, we can initialize our estimate of the target position at some arbitrary point, for example, at the midpoint of the reference nodes:
+
+```{python}
+#|code-fold: false
+# Initial guess for the target position
+x_est = np.mean(x_nodes, axis=0)
+print("Initial estimate of the target position:", x_est)
+```
+
+Once we have the initial estimate, we can compute the predicted distances from our estimate to the reference nodes:
+
+```{python}
+#|code-fold: false
+# Compute predicted distances from the estimate to the reference nodes
+d_pred = np.linalg.norm(x_nodes - x_est, axis=1)
+print("Predicted distances from the estimate:", d_pred)
+```
+
+The next step is to define a cost function that quantifies the error between the predicted distances and the true distances. A common choice for the cost function is the sum of squared errors:
+
+$$
+J(\mathbf{x}) = \sum_{i=1}^{N} (d_i - \|\mathbf{x} - \mathbf{x}_i\|)^2
+$$
+
+Note that $d_i$ are the measurements given by the receiver, $\mathbf{x}_i$ are the node positions that are also known and $\mathbf{x}$ are the different trial positions that the algorithm is going to generate (starting with the apriori position provided at the initialization phase of the algorithm).
+
+For the apriori value we defined before, the cost function can be computed as follows:
+
+```{python}
+#|code-fold: false
+# Compute the cost function
+def cost_function(x, x_nodes, d_true):
+    d_pred = np.linalg.norm(x_nodes - x, axis=1)
+    return np.sum((d_true - d_pred) ** 2)
+
+initial_cost = cost_function(x_est, x_nodes, d_true)
+print("Initial cost:", initial_cost)
+```
+
+::: {.callout-tip collapse=true}
+## What is the value of the cost function at the true target position?
+
+Zero, since the predicted distances will match the true distances exactly, resulting in no error.
+:::
+
+Now that a cost function is defined, we need to know in which direction to *iterate* in order to minimize the cost function. This is where the concept of the gradient comes into play. The intuition behind the gradient is that it points in the direction of the steepest ascent of the cost function. Therefore, to minimize the cost function, we need to move in the opposite direction of the gradient. The gradient of the cost function with respect to the target position $\mathbf{x}$ can be computed as follows:
+
+$$
+\nabla J(\mathbf{x}) = -2 \sum_{i=1}^{N} (d_i - \|\mathbf{x} - \mathbf{x}_i\|) \frac{\mathbf{x} - \mathbf{x}_i}{\|\mathbf{x} - \mathbf{x}_i\|}
+$$
+The gradient provides us with the direction in which we should update our estimate of the target position to minimize the cost function. In a gradient descent algorithm, we would update our estimate as follows:
+
+$$
+\mathbf{x}_{\text{new}} = \mathbf{x}_{\text{old}} - \alpha \nabla J(\mathbf{x}_{\text{old}})
+$$
+where $\alpha$ is the learning rate, which controls the step size of the update. By iteratively updating our estimate of the target position using the gradient descent algorithm, we can converge to a position that minimizes the cost function, which ideally should be close to the true target position.
+
+In the example above, let's iterate to see how the estimate of the target position as well as the cost function evolve:
+
+```{python}
+#|code-fold: false
+# Gradient descent parameters
+alpha = 0.1  # Learning rate
+
+num_iterations = 5  # Number of iterations
+
+# Gradient descent loop
+for i in range(num_iterations):
+    # Compute the gradient
+    d_pred = np.linalg.norm(x_nodes - x_est, axis=1)
+
+    gradient = -2 * np.sum((d_true - d_pred)[:, np.newaxis] * (x_est - x_nodes) / d_pred[:, np.newaxis], axis=0)
+
+    # Update the estimate
+    x_est = x_est - alpha * gradient
+    # Compute the cost function
+    cost = cost_function(x_est, x_nodes, d_true)
+
+    print(f"Iteration {i+1}: Estimated position = {x_est}, Cost = {cost}")
+```
+
+As the algorithm iterates, the estimated position *converges* towards the true target position, and the cost function decreases, indicating that our estimate is improving.
