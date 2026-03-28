@@ -1,16 +1,15 @@
-FROM mcr.microsoft.com/devcontainers/anaconda:0-3
+FROM debian:12.13-slim
 
-# Copy environment.yml (if found) to a temp location so we update the environment. Also
-# copy "noop.txt" so the COPY instruction does not fail if no environment.yml exists.
-COPY environment.yml* .devcontainer/noop.txt /tmp/conda-tmp/
-RUN if [ -f "/tmp/conda-tmp/environment.yml" ]; then umask 0002 && /opt/conda/bin/conda env update -n base -f /tmp/conda-tmp/environment.yml; fi \
-    && rm -rf /tmp/conda-tmp \
-    && TEMP_DEB="$(mktemp)" \
-    && wget -O "$TEMP_DEB" 'https://github.com/quarto-dev/quarto-cli/releases/download/v1.6.42/quarto-1.6.42-linux-amd64.deb' \
-    && dpkg -i "$TEMP_DEB" && rm -f "$TEMP_DEB"
+WORKDIR /workspace
 
+RUN apt update \
+ && apt install -y wget python3 python3-pip git
 
+COPY requirements.txt /workspace/requirements.txt
 
-# [Optional] Uncomment this section to install additional OS packages.
-# RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
-#     && apt-get -y install --no-install-recommends <your-package-list-here>
+RUN python3 -m pip config set global.break-system-packages true \
+ && python3 -m pip install -r ./requirements.txt
+
+ RUN wget -O /tmp/quarto.deb https://github.com/quarto-dev/quarto-cli/releases/download/v1.9.36/quarto-1.9.36-linux-amd64.deb \
+ && dpkg -i /tmp/quarto.deb \
+ && rm /tmp/quarto.deb

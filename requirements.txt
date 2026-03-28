@@ -3,3 +3,5 @@ ipywidgets
 matplotlib
 numpy
 pandas
+jupyter
+plotly
